@@ -7,7 +7,7 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ObjectDoesNotExist
 from cities_light.models import Country, City
 
-from .serializers import UserSerializer, ProfileSerializer, PostSerializer, ProfileHeaderSerializer, \
+from .serializers import UserSerializer, ProfileSerializer, PostSerializer, \
     CommentSerializer, CommunitySerializer
 from .models import Profile, Post, Comment, Community
 
@@ -75,7 +75,7 @@ class UserView(viewsets.ModelViewSet):
 
     @action(methods=['POST'], detail=False)
     def register(self, request):
-        for key in ['email']:
+        for key in ['email', 'first_name', 'last_name']:
             if key not in request.data:
                 return response['invalid_data']
 
@@ -87,7 +87,9 @@ class UserView(viewsets.ModelViewSet):
                 return response['ok_message']('Email is busy')
 
             user = User.objects.create_user(**serialized.data)
-            Profile.objects.create(user=user)
+            Profile.objects.create(
+                user=user, first_name=request.data['first_name'], last_name=request.data['last_name']
+            )
             return response['created']
 
         if 'email' in serialized.errors:
@@ -98,46 +100,36 @@ class UserView(viewsets.ModelViewSet):
 
         return response['invalid_data']
 
-    @action(methods=['POST'], detail=False)
-    def check(self, request):
-        for key in ['password', 'username']:
-            if key not in request.data:
-                return response['invalid_data']
-
-        try:
-            user = User.objects.get(username=request.data['username'])
-        except ObjectDoesNotExist:
-            return response['ok_message']('Wrong username')
-
-        is_password_match = user.check_password(request.data['password'])
-        if not is_password_match:
-            return response['ok_message']('Wrong password')
-
-        return response['ok']
-
 
 class ProfileView(viewsets.ModelViewSet):
     serializer_class = ProfileSerializer
     queryset = Profile.objects.all()
 
-    @action(methods=['POST'], detail=False)
-    def set_location(self, request):
+    @action(methods=['POST'], detail=True)
+    def get_fields(self, request, pk=None):
+
+        profile = self.get_object()
+
+        requested_fields = request.data['fields']
+        serialized = ProfileSerializer(profile, fields=requested_fields)
+
+        return response['ok_data'](serialized.data)
+
+    @action(methods=['POST'], detail=True)
+    def set_location(self, request, pk=None):
         for key in ['city', 'country']:
             if key not in request.data:
                 return response['invalid_data']
 
-        try:
-            user = Profile.objects.get(user=request.user)
-        except ObjectDoesNotExist:
-            return response['ok_message']('Wrong username')
+        profile = self.get_object()
 
-        if not user.set_location(request.data['city'], request.data['country']):
+        if not profile.set_location(request.data['city'], request.data['country']):
             return response['ok_message']('Wrong location')
 
         return response['ok']
 
-    @action(methods=['POST'], detail=False)
-    def follow(self, request):
+    @action(methods=['POST'], detail=True)
+    def follow(self, request, pk=None):
         for key in ['receiver']:
             if key not in request.data:
                 return response['invalid_data']
@@ -148,7 +140,7 @@ class ProfileView(viewsets.ModelViewSet):
             return response['ok_message']('Wrong receiver username')
 
         try:
-            sender = Profile.objects.get(user=request.user)
+            sender = Profile.objects.get(user_id=pk)
         except ObjectDoesNotExist:
             return response['ok_message']('Wrong sender username')
 
@@ -168,51 +160,51 @@ class ProfileView(viewsets.ModelViewSet):
             receiver.followers.add(sender)
         return response['ok']
 
-    @action(methods=['GET'], detail=False)
-    def headers(self, request):
+    @action(methods=['GET'], detail=True)
+    def posts(self, request, pk=None):
 
-        print(request.user)
-        try:
-            profile = Profile.objects.get(user=request.user)
-        except ObjectDoesNotExist:
-            return response['ok_message']('Wrong username')
+        profile = self.get_object()
 
-        serialized = ProfileHeaderSerializer(profile)
+        serialized = PostSerializer(profile.posts, many=True)
         return response['ok_data'](serialized.data)
 
-    @action(methods=['GET'], detail=False)
-    def friends_short_list(self, request):
+    @action(methods=['GET'], detail=True)
+    def newsfeed(self, request, pk=None):
 
-        try:
-            profile = Profile.objects.get(user=request.user)
-        except ObjectDoesNotExist:
-            return response['ok_message']('Wrong username')
+        profile = self.get_object()
+
+        authors_list = profile.friends.all()
+        author = Profile.objects.filter(id=pk)
+        authors_list |= author
+
+        posts = Post.objects.filter(author__in=authors_list)
+        serialized = PostSerializer(posts, many=True)
+        return response['ok_data'](serialized.data)
+
+    @action(methods=['GET'], detail=True)
+    def friends_short_list(self, request, pk=None):
+
+        profile = self.get_object()
 
         serialized = ProfileSerializer(profile.friends, many=True, fields=('avatar', 'user'))
         return response['ok_data'](serialized.data)
 
-    @action(methods=['GET'], detail=False)
-    def communities(self, request):
+    @action(methods=['GET'], detail=True)
+    def communities(self, request, pk=None):
 
-        try:
-            profile = Profile.objects.get(user=request.user)
-        except ObjectDoesNotExist:
-            return response['ok_message']('Wrong username')
+        profile = self.get_object()
 
         serialized = CommunitySerializer(profile.communities, many=True,
                                          fields=('name', 'address', 'occupation', 'avatar'))
         return response['ok_data'](serialized.data)
 
-    @action(methods=['POST'], detail=False)
-    def add_community(self, request):
+    @action(methods=['POST'], detail=True)
+    def add_community(self, request, pk=None):
         for key in ['community']:
             if key not in request.data:
                 return response['invalid_data']
 
-        try:
-            profile = Profile.objects.get(user=request.user)
-        except ObjectDoesNotExist:
-            return response['ok_message']('Wrong username')
+        profile = self.get_object()
 
         try:
             community = Community.objects.get(address=request.data['community'])
@@ -222,43 +214,23 @@ class ProfileView(viewsets.ModelViewSet):
         profile.communities.add(community)
         return response['ok']
 
-    @action(methods=['GET'], detail=False)
-    def intro(self, request):
-
-        try:
-            profile = Profile.objects.get(user=request.user)
-        except ObjectDoesNotExist:
-            return response['ok_message']('Wrong username')
-
-        serialized = ProfileSerializer(profile, fields=('intro',))
-        return response['ok_data'](serialized.data)
-
-    @action(methods=['POST'], detail=False)
-    def add_intro(self, request):
-        for key in ['title', 'text']:
-            if key not in request.data:
-                return response['invalid_data']
-
-        try:
-            profile = Profile.objects.get(user=request.user)
-        except ObjectDoesNotExist:
-            return response['ok_message']('Wrong username')
-
-        if profile.intro:
-            profile.intro[0][request.data['title']] = request.data['text']
-        else:
-            profile.intro = [{request.data['title']: request.data['text']}]
-        profile.save()
-        return response['ok']
-
 
 class PostView(viewsets.ModelViewSet):
     serializer_class = PostSerializer
+    queryset = Post.objects.all()
 
-    def get_queryset(self):
-        if self.request.user:
-            return Post.objects.filter(author__user=self.request.user)
-        return Post.objects.all()
+    @action(methods=['POST'], detail=True)
+    def get_fields(self, request, pk=None):
+
+        try:
+            post = Post.objects.get(pk=pk)
+        except ObjectDoesNotExist:
+            return response['ok_message']('Wrong username')
+
+        requested_fields = request.data['fields']
+        serialized = PostSerializer(post, fields=requested_fields)
+
+        return response['ok_data'](serialized.data)
 
     @action(methods=['POST'], detail=False)
     def add(self, request):
@@ -267,10 +239,11 @@ class PostView(viewsets.ModelViewSet):
                 return response['invalid_data']
 
         author = Profile.objects.get(user=request.user)
-        Post.objects.create(text=request.data['text'], author=author)
-        return response['created']
+        post = Post.objects.create(text=request.data['text'], author=author)
+        serialized = PostSerializer(post)
+        return response['ok_data'](serialized.data)
 
-    @action(methods=['PUT'], detail=True)
+    @action(methods=['PATCH'], detail=True)
     def like(self, request, pk=None):
 
         try:
@@ -279,7 +252,7 @@ class PostView(viewsets.ModelViewSet):
             return response['ok_message']('Wrong post id')
 
         try:
-            profile = Profile.objects.get(user=request.user)
+            profile = Profile.objects.get(user__id=request.data['author'])
         except ObjectDoesNotExist:
             return response['ok_message']('Wrong username')
 
@@ -353,6 +326,6 @@ def root(request):
 def jwt_response_payload_handler(token, user=None, request=None):
     return {
         'token': token,
-        'id': user.id
+        'id': user.profile.id
     }
 
